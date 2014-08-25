@@ -43,6 +43,7 @@ package manners
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -84,12 +85,15 @@ func NewWithServer(s *http.Server) *GracefulServer {
 //
 // It must be initialized by calling NewServer or NewWithServer
 type GracefulServer struct {
+	name string
 	*http.Server
 	shutdown chan struct{}
 	wg       waitgroup
 
 	// used by test code
-	up chan net.Listener
+	up       chan net.Listener
+	down     chan bool
+	listener *GracefulListener
 }
 
 // Close stops the server from accepting new requets and beings shutting down.
@@ -99,20 +103,18 @@ func (s *GracefulServer) Close() {
 
 // ListenAndServe provides a graceful equivalent of net/http.Serve.ListenAndServe.
 func (s *GracefulServer) ListenAndServe() error {
-	oldListener, err := net.Listen("tcp", s.Addr)
-	if err != nil {
-		return err
+	if s.listener == nil {
+		oldListener, err := net.Listen("tcp", s.Addr)
+		if err != nil {
+			return err
+		}
+		s.listener = NewListener(oldListener.(*net.TCPListener))
 	}
-
-	//listener := NewListener(tcpKeepAliveListener{oldListener.(*net.TCPListener)})
-	listener := NewListener(oldListener.(*net.TCPListener))
-	err = s.Serve(listener)
-	return err
+	return s.Serve(s.listener)
 }
 
 // ListenAndServeTLS provides a graceful equivalent of net/http.Serve.ListenAndServeTLS.
 func (s *GracefulServer) ListenAndServeTLS(certFile, keyFile string) error {
-	// direct lift from net/http/server.go
 	addr := s.Addr
 	if addr == "" {
 		addr = ":https"
@@ -132,14 +134,38 @@ func (s *GracefulServer) ListenAndServeTLS(certFile, keyFile string) error {
 		return err
 	}
 
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
+	return s.ListenAndServeTLSWithConfig(config)
+}
+
+// ListenAndServeTLS provides a graceful equivalent of net/http.Serve.ListenAndServeTLS.
+func (s *GracefulServer) ListenAndServeTLSWithConfig(config *tls.Config) error {
+	addr := s.Addr
+	if addr == "" {
+		addr = ":https"
 	}
 
-	tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
-	return s.Serve(NewListener(tlsListener))
+	if s.listener == nil {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
 
+		tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
+		s.listener = NewListener(tlsListener)
+
+	}
+	return s.Serve(s.listener)
+}
+
+func (gs *GracefulServer) HijackListener(s *http.Server) (*GracefulServer, error) {
+	listener, err := gs.listener.Clone()
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("Cloned")
+	other := NewWithServer(s)
+	other.listener = listener
+	return other, nil
 }
 
 // Serve provides a graceful equivalent net/http.Server.Serve.
@@ -165,7 +191,6 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 	orgConnState := s.Server.ConnState
 	s.ConnState = func(conn net.Conn, newState http.ConnState) {
 		gconn := conn.(*gracefulConn)
-		//fmt.Printf("%p %s -> %s\n", gconn, gconn.lastHTTPState, newState)
 		switch newState {
 		case http.StateNew:
 			// new_conn -> StateNew
@@ -185,12 +210,14 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 				// one more request before SetKeepAliveEnabled(false)  takes effect.
 				conn.Close()
 			}
+			fmt.Printf("Connection idle\n")
 			s.FinishRoutine()
 
 		case http.StateClosed, http.StateHijacked:
 			// (StateNew, StateActive, StateIdle) -> (StateClosed, StateHiJacked)
 			if gconn.lastHTTPState != http.StateIdle {
 				// if it was idle it's already been decremented
+				fmt.Printf("Connection closed\n")
 				s.FinishRoutine()
 			}
 		}
@@ -206,6 +233,15 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 		s.up <- listener
 	}
 	err := s.Server.Serve(listener)
+	if s.down != nil {
+		defer func() {
+			close(s.down)
+		}()
+	}
+
+	defer func() {
+		fmt.Printf("Server(%s) stopped. Error: %T, %s\n", s.name, err, err)
+	}()
 
 	// This block is reached when the server has received a shut down command.
 	if err == nil {
@@ -223,11 +259,17 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 // request.
 func (s *GracefulServer) StartRoutine() {
 	s.wg.Add(1)
+	fmt.Printf("Server(%s) StartRoutine()\n", s.name)
 }
 
 // FinishRoutine decrements the server's WaitGroup. Used this to complement StartRoutine().
 func (s *GracefulServer) FinishRoutine() {
 	s.wg.Done()
+	fmt.Printf("Server(%s) FinishRoutine()\n", s.name)
+}
+
+func (s *GracefulServer) GetFD() (uintptr, string) {
+	return s.listener.GetFD()
 }
 
 var (

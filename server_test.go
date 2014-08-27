@@ -23,7 +23,6 @@ type httpInterface interface {
 
 // an inefficient replica of a waitgroup that can be introspected
 type testWg struct {
-	name string
 	sync.Mutex
 	count        int
 	waitCalled   chan int
@@ -33,14 +32,13 @@ type testWg struct {
 func newTestWg() *testWg {
 	return &testWg{
 		waitCalled:   make(chan int, 1),
-		countChanged: make(chan int, 100),
+		countChanged: make(chan int, 1024),
 	}
 }
 
 func (wg *testWg) Add(delta int) {
 	wg.Lock()
 	wg.count++
-	fmt.Printf("WG(%s)-Add: %d\n", wg.name, wg.count)
 	wg.countChanged <- wg.count
 	wg.Unlock()
 }
@@ -49,20 +47,17 @@ func (wg *testWg) Done() {
 	wg.Lock()
 	wg.count--
 	wg.countChanged <- wg.count
-	fmt.Printf("WG(%s)-Done: %d\n", wg.name, wg.count)
 	wg.Unlock()
 }
 
 func (wg *testWg) Wait() {
 	wg.Lock()
-	fmt.Printf("WG(%s)-Wait: %d\n", wg.name, wg.count)
 	wg.waitCalled <- wg.count
 	wg.Unlock()
 }
 
 // a simple step-controllable http client
 type client struct {
-	name        string
 	tls         bool
 	addr        net.Addr
 	connected   chan error
@@ -75,11 +70,8 @@ type client struct {
 func (c *client) Run() {
 	go func() {
 		var err error
-		fmt.Printf("Client(%s) before Dial\n", c.name)
 		conn, err := net.Dial(c.addr.Network(), c.addr.String())
-		fmt.Printf("Client(%s) after dial\n", c.name)
 		if err != nil {
-			fmt.Println("Client(%s) connected with error %s\n", conn, err)
 			c.connected <- err
 			return
 		}
@@ -87,7 +79,6 @@ func (c *client) Run() {
 			conn = tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
 		}
 		c.connected <- nil
-		fmt.Println("Client(%s) connected successfully\n", c.name)
 		for <-c.sendrequest {
 			_, err = conn.Write([]byte("GET / HTTP/1.1\nHost: localhost:8000\n\n"))
 			if err != nil {
@@ -102,10 +93,8 @@ func (c *client) Run() {
 					break
 				}
 			}
-			fmt.Printf("Client(%s) got response\n", c.name)
 			c.idle <- scanner.Err()
 			<-c.idlerelease
-			fmt.Printf("Client(%s) idle released\n", c.name)
 		}
 		conn.Close()
 		ioutil.ReadAll(conn)
@@ -183,7 +172,6 @@ func startTLSServer(t *testing.T, server *GracefulServer, certFile, keyFile stri
 
 // Test that the method signatures of the methods we override from net/http/Server match those of the original.
 func TestInterface(t *testing.T) {
-	return
 	var original, ours interface{}
 	original = &http.Server{}
 	ours = &GracefulServer{}
@@ -197,7 +185,6 @@ func TestInterface(t *testing.T) {
 
 // Tests that the server allows in-flight requests to complete before shutting down.
 func TestGracefulness(t *testing.T) {
-	return
 	server := NewServer()
 	wg := newTestWg()
 	server.wg = wg
@@ -252,7 +239,6 @@ func fmtstates(states []http.ConnState) string {
 
 // Test the state machine in isolation without a network connection
 func TestStateTransitions(t *testing.T) {
-	return
 	for _, test := range stateTests {
 		fmt.Println("Starting test ", fmtstates(test.states))
 		server := NewServer()
@@ -309,7 +295,6 @@ func (l *fakeListener) Accept() (net.Conn, error) {
 
 // Test that a connection is closed upon reaching an idle state iff the server is shutting down.
 func TestCloseOnIdle(t *testing.T) {
-	return
 	server := NewServer()
 	wg := newTestWg()
 	server.wg = wg
@@ -367,7 +352,6 @@ func waitForState(t *testing.T, waiter chan http.ConnState, state http.ConnState
 
 // Test that a request moving from active->idle->active using an actual network connection still results in a corect shutdown.
 func TestStateTransitionActiveIdleActive(t *testing.T) {
-	return
 	server := NewServer()
 	wg := newTestWg()
 	statechanged := make(chan http.ConnState)
@@ -406,7 +390,6 @@ func TestStateTransitionActiveIdleActive(t *testing.T) {
 // Test state transitions from new->active->-idle->closed using an actual
 // network connection and make sure the waitgroup count is correct at the end.
 func TestStateTransitionActiveIdleClosed(t *testing.T) {
-	return
 	var (
 		listener net.Listener
 		exitchan chan error
@@ -471,7 +454,6 @@ func TestStateTransitionActiveIdleClosed(t *testing.T) {
 // Test that supplying a non GracefulListener to Serve works
 // correctly (ie. that the listener is wrapped to become graceful)
 func TestWrapConnection(t *testing.T) {
-	return
 	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatal("Failed to create listener", err)
@@ -516,7 +498,6 @@ func TestWrapConnection(t *testing.T) {
 // Tests that the server begins to shut down when told to and does not accept
 // new requests once shutdown has begun
 func TestShutdown(t *testing.T) {
-	return
 	server := NewServer()
 	wg := newTestWg()
 	server.wg = wg
@@ -556,7 +537,6 @@ func TestShutdown(t *testing.T) {
 // Use the top level functions to instantiate servers and make sure
 // they all shutdown when Close() is called
 func TestGlobalShutdown(t *testing.T) {
-	return
 	laserr := make(chan error)
 	lastlserr := make(chan error)
 	serveerr := make(chan error)
@@ -619,15 +599,11 @@ func TestGlobalShutdown(t *testing.T) {
 // Hijack listener
 func TestHijackListener(t *testing.T) {
 	server := NewServer()
-	server.name = "s1"
 	wg := newTestWg()
-	wg.name = "wg"
 	server.wg = wg
-	server.down = make(chan bool)
 	listener, exitchan := startServer(t, server, nil)
 
 	client := newClient(listener.Addr(), false)
-	client.name = "c1"
 	client.Run()
 
 	// wait for client to connect, but don't let it send the request yet
@@ -635,36 +611,26 @@ func TestHijackListener(t *testing.T) {
 		t.Fatal("Client failed to connect to server", err)
 	}
 
-	// Make sure first server got the request
-	if count := <-wg.countChanged; count != 1 {
-		t.Fatal("Expected first server to accept the request")
-	}
-
-	fmt.Println("Before Hijack")
+	// Make sure server1 got the request and added it to the waiting group
+	<-wg.countChanged
 
 	wg2 := newTestWg()
-	wg2.name = "wg2"
 	server2, err := server.HijackListener(new(http.Server))
-	server2.name = "s2"
 	server2.wg = wg2
 	if err != nil {
 		t.Fatal("Failed to hijack listener", err)
 	}
-
-	fmt.Println("After Hijack")
 
 	listener2, exitchan2 := startServer(t, server2, nil)
 
 	// Close the first server
 	server.Close()
 
-	fmt.Println("Close server")
 	// First server waits for the first request to finish
 	waiting := <-wg.waitCalled
 	if waiting < 1 {
 		t.Errorf("Expected the waitgroup to equal 1 at shutdown; actually %d", waiting)
 	}
-	fmt.Println("Server1 waits")
 
 	// allow the client to finish sending the request and make sure the server exits after
 	// (client will be in connected but idle state at that point)
@@ -673,33 +639,20 @@ func TestHijackListener(t *testing.T) {
 	if err := <-exitchan; err != nil {
 		t.Error("Unexpected error during shutdown", err)
 	}
-	fmt.Println("Client 1 exited")
-
-	// Make sure server1 has been closed
-	<-server.down
-
-	fmt.Println("Server 1 exited")
 
 	client2 := newClient(listener2.Addr(), false)
-	client2.name = "c2"
 	client2.Run()
 
-	fmt.Println("Checkpoint 1")
-
 	// wait for client to connect, but don't let it send the request yet
-	if err := <-client2.connected; err != nil {
-		t.Fatal("Client failed to connect to server", err)
+	select {
+	case err := <-client2.connected:
+		if err != nil {
+			t.Fatal("Client failed to connect to server", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout connecting to the server", err)
 	}
 
-	fmt.Println("Checkpoint 1.1")
-
-	if count := <-wg2.countChanged; count != 1 {
-		t.Fatal("Expected first server to accept the request")
-	}
-
-	fmt.Println("Checkpoint 1.2")
-
-	fmt.Println("Checkpoint 2")
 	// Close the second server
 	server2.Close()
 
@@ -708,8 +661,6 @@ func TestHijackListener(t *testing.T) {
 		t.Errorf("Expected the waitgroup to equal 1 at shutdown; actually %d", waiting)
 	}
 
-	fmt.Println("Checkpoint 3")
-
 	// allow the client to finish sending the request and make sure the server exits after
 	// (client will be in connected but idle state at that point)
 	client2.sendrequest <- true
@@ -717,12 +668,10 @@ func TestHijackListener(t *testing.T) {
 	if err := <-client2.idle; err != nil {
 		t.Errorf("Client failed to write the request, error: %s", err)
 	}
-	fmt.Println("Checkpoint 4")
 	close(client2.sendrequest)
 	if err := <-exitchan2; err != nil {
 		t.Error("Unexpected error during shutdown", err)
 	}
-	fmt.Println("Checkpoint 5")
 }
 
 type tempFile struct {

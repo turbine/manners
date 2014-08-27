@@ -5,9 +5,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"reflect"
 	"sync"
-	"syscall"
 )
 
 // NewListener wraps an existing listener for use with
@@ -24,8 +22,7 @@ func NewListener(l net.Listener) *GracefulListener {
 	}
 }
 
-// A gracefulCon wraps a normal net.Conn and tracks the
-// last known http state.
+// A gracefulCon wraps a normal net.Conn and tracks the last known http state.
 type gracefulConn struct {
 	net.Conn
 	lastHTTPState http.ConnState
@@ -33,8 +30,7 @@ type gracefulConn struct {
 
 // A GracefulListener differs from a standard net.Listener in one way: if
 // Accept() is called after it is gracefully closed, it returns a
-// listenerAlreadyClosed error. The GracefulServer will ignore this
-// error.
+// listenerAlreadyClosed error. The GracefulServer will ignore this error.
 type GracefulListener struct {
 	listener net.Listener
 	open     bool
@@ -76,12 +72,14 @@ func (l *GracefulListener) Close() error {
 	return l.listener.Close()
 }
 
-func (l *GracefulListener) GetFD() (uintptr, string) {
-	v := reflect.ValueOf(l.listener).Elem().FieldByName("fd").Elem()
-	fd := uintptr(v.FieldByName("sysfd").Int())
-	addr := l.listener.Addr()
-	name := fmt.Sprintf("%s:%s->", addr.Network(), addr.String())
-	return fd, name
+func (l *GracefulListener) GetFile() (*os.File, error) {
+	switch t := l.listener.(type) {
+	case *net.TCPListener:
+		return t.File()
+	case *net.UnixListener:
+		return t.File()
+	}
+	return nil, fmt.Errorf("Unsupported listener")
 }
 
 func (l *GracefulListener) Clone() (*GracefulListener, error) {
@@ -92,21 +90,17 @@ func (l *GracefulListener) Clone() (*GracefulListener, error) {
 		return nil, fmt.Errorf("listener is already closed")
 	}
 
-	fd, fdName := l.GetFD()
+	file, err := l.GetFile()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
 
-	fl, err := net.FileListener(os.NewFile(fd, fdName))
+	fl, err := net.FileListener(file)
 	if nil != err {
 		return nil, err
 	}
 
-	switch fl.(type) {
-	case *net.TCPListener, *net.UnixListener:
-	default:
-		return nil, fmt.Errorf("file descriptor is %T not *net.TCPListener or *net.UnixListener", l)
-	}
-	if err := syscall.Close(int(fd)); nil != err {
-		return nil, err
-	}
 	return NewListener(fl), nil
 }
 

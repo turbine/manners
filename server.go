@@ -43,7 +43,6 @@ package manners
 
 import (
 	"crypto/tls"
-	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -85,15 +84,13 @@ func NewWithServer(s *http.Server) *GracefulServer {
 //
 // It must be initialized by calling NewServer or NewWithServer
 type GracefulServer struct {
-	name string
 	*http.Server
 	shutdown chan struct{}
 	wg       waitgroup
+	listener *GracefulListener
 
 	// used by test code
-	up       chan net.Listener
-	down     chan bool
-	listener *GracefulListener
+	up chan net.Listener
 }
 
 // Close stops the server from accepting new requets and beings shutting down.
@@ -162,7 +159,6 @@ func (gs *GracefulServer) HijackListener(s *http.Server) (*GracefulServer, error
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("Cloned")
 	other := NewWithServer(s)
 	other.listener = listener
 	return other, nil
@@ -210,14 +206,12 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 				// one more request before SetKeepAliveEnabled(false)  takes effect.
 				conn.Close()
 			}
-			fmt.Printf("Connection idle\n")
 			s.FinishRoutine()
 
 		case http.StateClosed, http.StateHijacked:
 			// (StateNew, StateActive, StateIdle) -> (StateClosed, StateHiJacked)
 			if gconn.lastHTTPState != http.StateIdle {
 				// if it was idle it's already been decremented
-				fmt.Printf("Connection closed\n")
 				s.FinishRoutine()
 			}
 		}
@@ -233,15 +227,6 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 		s.up <- listener
 	}
 	err := s.Server.Serve(listener)
-	if s.down != nil {
-		defer func() {
-			close(s.down)
-		}()
-	}
-
-	defer func() {
-		fmt.Printf("Server(%s) stopped. Error: %T, %s\n", s.name, err, err)
-	}()
 
 	// This block is reached when the server has received a shut down command.
 	if err == nil {
@@ -259,17 +244,11 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 // request.
 func (s *GracefulServer) StartRoutine() {
 	s.wg.Add(1)
-	fmt.Printf("Server(%s) StartRoutine()\n", s.name)
 }
 
 // FinishRoutine decrements the server's WaitGroup. Used this to complement StartRoutine().
 func (s *GracefulServer) FinishRoutine() {
 	s.wg.Done()
-	fmt.Printf("Server(%s) FinishRoutine()\n", s.name)
-}
-
-func (s *GracefulServer) GetFD() (uintptr, string) {
-	return s.listener.GetFD()
 }
 
 var (

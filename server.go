@@ -147,7 +147,7 @@ func (s *GracefulServer) ListenAndServeTLSWithConfig(config *tls.Config) error {
 			return err
 		}
 
-		tlsListener := tls.NewListener(tcpKeepAliveListener{ln.(*net.TCPListener)}, config)
+		tlsListener := tls.NewListener(TCPKeepAliveListener{ln.(*net.TCPListener)}, config)
 		s.listener = NewListener(tlsListener)
 
 	}
@@ -293,17 +293,17 @@ func Close() {
 	m.Unlock()
 }
 
-// tcpKeepAliveListener sets TCP keep-alive timeouts on accepted
+// TCPKeepAliveListener sets TCP keep-alive timeouts on accepted
 // connections. It's used by ListenAndServe and ListenAndServeTLS so
 // dead TCP connections (e.g. closing laptop mid-download) eventually
 // go away.
 //
 // direct lift from net/http/server.go
-type tcpKeepAliveListener struct {
+type TCPKeepAliveListener struct {
 	*net.TCPListener
 }
 
-func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
+func (ln TCPKeepAliveListener) Accept() (c net.Conn, err error) {
 	tc, err := ln.AcceptTCP()
 	if err != nil {
 		return

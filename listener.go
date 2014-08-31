@@ -82,7 +82,7 @@ func (l *GracefulListener) GetFile() (*os.File, error) {
 	return nil, fmt.Errorf("Unsupported listener")
 }
 
-func (l *GracefulListener) Clone() (*GracefulListener, error) {
+func (l *GracefulListener) Clone() (net.Listener, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -100,8 +100,7 @@ func (l *GracefulListener) Clone() (*GracefulListener, error) {
 	if nil != err {
 		return nil, err
 	}
-
-	return NewListener(fl), nil
+	return fl, nil
 }
 
 type listenerAlreadyClosed struct {

@@ -615,7 +615,7 @@ func TestHijackListener(t *testing.T) {
 	<-wg.countChanged
 
 	wg2 := newTestWg()
-	server2, err := server.HijackListener(new(http.Server))
+	server2, err := server.HijackListener(new(http.Server), nil)
 	server2.wg = wg2
 	if err != nil {
 		t.Fatal("Failed to hijack listener", err)

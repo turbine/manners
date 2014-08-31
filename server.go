@@ -154,13 +154,18 @@ func (s *GracefulServer) ListenAndServeTLSWithConfig(config *tls.Config) error {
 	return s.Serve(s.listener)
 }
 
-func (gs *GracefulServer) HijackListener(s *http.Server) (*GracefulServer, error) {
+func (gs *GracefulServer) HijackListener(s *http.Server, config *tls.Config) (*GracefulServer, error) {
 	listener, err := gs.listener.Clone()
 	if err != nil {
 		return nil, err
 	}
+
+	if config != nil {
+		listener = tls.NewListener(TCPKeepAliveListener{listener.(*net.TCPListener)}, config)
+	}
+
 	other := NewWithServer(s)
-	other.listener = listener
+	other.listener = NewListener(listener)
 	return other, nil
 }
 

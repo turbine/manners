@@ -176,9 +176,12 @@ func (gs *GracefulServer) HijackListener(s *http.Server, config *tls.Config) (*G
 func (s *GracefulServer) Serve(listener net.Listener) error {
 	// accept a net.Listener to preserve the interface compatibility with the standard
 	// http.Server, but we except a GracefluListener
-	if _, ok := listener.(*GracefulListener); !ok {
-		listener = NewListener(listener)
+	gracefulListener, ok := listener.(*GracefulListener)
+	if !ok {
+		gracefulListener = NewListener(listener)
+		listener = gracefulListener
 	}
+	s.listener = gracefulListener
 
 	var closing int32
 

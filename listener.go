@@ -1,11 +1,13 @@
 package manners
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 // NewListener wraps an existing listener for use with
@@ -73,13 +75,7 @@ func (l *GracefulListener) Close() error {
 }
 
 func (l *GracefulListener) GetFile() (*os.File, error) {
-	switch t := l.listener.(type) {
-	case *net.TCPListener:
-		return t.File()
-	case *net.UnixListener:
-		return t.File()
-	}
-	return nil, fmt.Errorf("Unsupported listener")
+	return getListenerFile(l.listener)
 }
 
 func (l *GracefulListener) Clone() (net.Listener, error) {
@@ -103,6 +99,69 @@ func (l *GracefulListener) Clone() (net.Listener, error) {
 	return fl, nil
 }
 
+// A listener implements a network listener (net.Listener) for TLS connections.
+// direct lift from crypto/tls.go
+type TLSListener struct {
+	net.Listener
+	config *tls.Config
+}
+
+// Accept waits for and returns the next incoming TLS connection.
+// The returned connection c is a *tls.Conn.
+func (l *TLSListener) Accept() (c net.Conn, err error) {
+	c, err = l.Listener.Accept()
+	if err != nil {
+		return
+	}
+	c = tls.Server(c, l.config)
+	return
+}
+
+// NewListener creates a Listener which accepts connections from an inner
+// Listener and wraps each connection with Server.
+// The configuration config must be non-nil and must have
+// at least one certificate.
+func NewTLSListener(inner net.Listener, config *tls.Config) net.Listener {
+	l := new(TLSListener)
+	l.Listener = inner
+	l.config = config
+	return l
+}
+
 type listenerAlreadyClosed struct {
 	error
+}
+
+// TCPKeepAliveListener sets TCP keep-alive timeouts on accepted
+// connections. It's used by ListenAndServe and ListenAndServeTLS so
+// dead TCP connections (e.g. closing laptop mid-download) eventually
+// go away.
+//
+// direct lift from net/http/server.go
+type TCPKeepAliveListener struct {
+	*net.TCPListener
+}
+
+func (ln TCPKeepAliveListener) Accept() (c net.Conn, err error) {
+	tc, err := ln.AcceptTCP()
+	if err != nil {
+		return
+	}
+	tc.SetKeepAlive(true)
+	tc.SetKeepAlivePeriod(3 * time.Minute)
+	return tc, nil
+}
+
+func getListenerFile(listener net.Listener) (*os.File, error) {
+	switch t := listener.(type) {
+	case *net.TCPListener:
+		return t.File()
+	case *net.UnixListener:
+		return t.File()
+	case TCPKeepAliveListener:
+		return t.TCPListener.File()
+	case *TLSListener:
+		return getListenerFile(t.Listener)
+	}
+	return nil, fmt.Errorf("Unsupported listener: %T", listener)
 }

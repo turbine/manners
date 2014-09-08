@@ -73,6 +73,19 @@ func NewWithServer(s *http.Server) *GracefulServer {
 	}
 }
 
+func NewWithListener(s *http.Server, l net.Listener) *GracefulServer {
+	gracefulListener, ok := l.(*GracefulListener)
+	if !ok {
+		gracefulListener = NewListener(l)
+	}
+	return &GracefulServer{
+		Server:   s,
+		shutdown: make(chan struct{}),
+		wg:       new(sync.WaitGroup),
+		listener: gracefulListener,
+	}
+}
+
 // A GracefulServer maintains a WaitGroup that counts how many in-flight
 // requests the server is handling. When it receives a shutdown signal,
 // it stops accepting new requests but does not actually shut down until

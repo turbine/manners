@@ -45,6 +45,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -183,6 +184,10 @@ func (s *GracefulServer) ListenAndServeTLSWithConfig(config *tls.Config) error {
 		s.listener = NewListener(tlsListener)
 	}
 	return s.Serve(s.listener)
+}
+
+func (gs *GracefulServer) GetFile() (*os.File, error) {
+	return gs.listener.GetFile()
 }
 
 func (gs *GracefulServer) HijackListener(s *http.Server, config *tls.Config) (*GracefulServer, error) {

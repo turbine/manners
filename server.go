@@ -277,12 +277,11 @@ func (s *GracefulServer) Serve(listener net.Listener) error {
 
 	// This block is reached when the server has received a shut down command.
 	if err == nil {
-		s.wg.Wait()
 		return nil
 	} else if _, ok := err.(listenerAlreadyClosed); ok {
-		s.wg.Wait()
 		return nil
 	}
+
 	return err
 }
 
@@ -296,6 +295,10 @@ func (s *GracefulServer) StartRoutine() {
 // FinishRoutine decrements the server's WaitGroup. Used this to complement StartRoutine().
 func (s *GracefulServer) FinishRoutine() {
 	s.wg.Done()
+}
+
+func (s *GracefulServer) Wait() {
+	s.wg.Wait()
 }
 
 var (

@@ -68,7 +68,7 @@ func (l *GracefulListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	// don't wrap connection in case if it's tls because we won't break
+	// don't wrap connection if it's tls so we won't break
 	// http server internal logic that relies on the type
 	if _, ok := conn.(*tls.Conn); ok {
 		return conn, nil

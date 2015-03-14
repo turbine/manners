@@ -62,9 +62,13 @@ type client struct {
 	addr        net.Addr
 	connected   chan error
 	sendrequest chan bool
-	idle        chan error
-	idlerelease chan bool
+	response    chan *rawResponse
 	closed      chan bool
+}
+
+type rawResponse struct {
+	body []string
+	err  error
 }
 
 func (c *client) Run() {
@@ -82,19 +86,21 @@ func (c *client) Run() {
 		for <-c.sendrequest {
 			_, err = conn.Write([]byte("GET / HTTP/1.1\nHost: localhost:8000\n\n"))
 			if err != nil {
-				c.idle <- err
+				c.response <- &rawResponse{err: err}
 			}
 			// Read response; no content
 			scanner := bufio.NewScanner(conn)
+			var lines []string
 			for scanner.Scan() {
 				// our null handler doesn't send a body, so we know the request is
 				// done when we reach the blank line after the headers
-				if scanner.Text() == "" {
+				line := scanner.Text()
+				if line == "" {
 					break
 				}
+				lines = append(lines, line)
 			}
-			c.idle <- scanner.Err()
-			<-c.idlerelease
+			c.response <- &rawResponse{lines, scanner.Err()}
 		}
 		conn.Close()
 		ioutil.ReadAll(conn)
@@ -108,8 +114,7 @@ func newClient(addr net.Addr, tls bool) *client {
 		tls:         tls,
 		connected:   make(chan error),
 		sendrequest: make(chan bool),
-		idle:        make(chan error),
-		idlerelease: make(chan bool),
+		response:    make(chan *rawResponse),
 		closed:      make(chan bool),
 	}
 }
@@ -187,9 +192,10 @@ func TestInterface(t *testing.T) {
 // Tests that the server allows in-flight requests to complete before shutting down.
 func TestGracefulness(t *testing.T) {
 	server := NewServer()
+	stateChangedCh := make(chan http.ConnState)
 	wg := newTestWg()
 	server.wg = wg
-	listener, exitchan := startServer(t, server, nil)
+	listener, exitchan := startServer(t, server, stateChangedCh)
 
 	client := newClient(listener.Addr(), false)
 	client.Run()
@@ -198,6 +204,9 @@ func TestGracefulness(t *testing.T) {
 	if err := <-client.connected; err != nil {
 		t.Fatal("Client failed to connect to server", err)
 	}
+	// Even though the client is connected, the server ConnState handler may
+	// not know about that yet. So wait until it is called.
+	waitForState(t, stateChangedCh, http.StateNew, "Request not received")
 
 	server.Close()
 
@@ -247,7 +256,7 @@ func TestStateTransitions(t *testing.T) {
 		server.wg = wg
 		startServer(t, server, nil)
 
-		conn := &gracefulConn{&fakeConn{}, 0}
+		conn := &gracefulConn{Conn: &fakeConn{}}
 		for _, newState := range test.states {
 			server.ConnState(conn, newState)
 		}
@@ -299,50 +308,6 @@ func (l *fakeListener) Accept() (net.Conn, error) {
 	return nil, errors.New("connection closed")
 }
 
-// Test that a connection is closed upon reaching an idle state iff the server is shutting down.
-func TestCloseOnIdle(t *testing.T) {
-	server := NewServer()
-	wg := newTestWg()
-	server.wg = wg
-	fl := newFakeListener()
-	runner := func() error {
-		return server.Serve(fl)
-	}
-
-	startGenericServer(t, server, nil, runner)
-
-	fconn := &fakeConn{}
-	conn := &gracefulConn{fconn, http.StateActive}
-
-	// Change to idle state while server is not closing; Close should not be called
-	server.ConnState(conn, http.StateIdle)
-	if conn.lastHTTPState != http.StateIdle {
-		t.Errorf("State was not changed to idle")
-	}
-	if fconn.closeCalled {
-		t.Error("Close was called unexpected")
-	}
-
-	// push back to active state
-	conn.lastHTTPState = http.StateActive
-	server.Close()
-	// race?
-
-	// wait until the server calls Close() on the listener
-	// by that point the atomic closing variable will have been updated, avoiding a race.
-	<-fl.closeCalled
-
-	server.ConnState(conn, http.StateIdle)
-	if conn.lastHTTPState != http.StateIdle {
-		t.Error("State was not changed to idle")
-	}
-	if !fconn.closeCalled {
-		t.Error("Close was not called")
-	}
-
-	fl.acceptRelease <- true
-}
-
 func waitForState(t *testing.T, waiter chan http.ConnState, state http.ConnState, errmsg string) {
 	for {
 		select {
@@ -375,8 +340,7 @@ func TestStateTransitionActiveIdleActive(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		client.sendrequest <- true
 		waitForState(t, statechanged, http.StateActive, "Client failed to reach active state")
-		<-client.idle
-		client.idlerelease <- true
+		<-client.response
 		waitForState(t, statechanged, http.StateIdle, "Client failed to reach idle state")
 	}
 
@@ -390,6 +354,35 @@ func TestStateTransitionActiveIdleActive(t *testing.T) {
 
 	if err := <-exitchan; err != nil {
 		t.Error("Unexpected error during shutdown", err)
+	}
+}
+
+// If a request is sent to a closed server via a kept alive connection then
+// the server closes the connection upon receiving the request.
+func TestRequestAfterClose(t *testing.T) {
+	// Given
+	server := NewServer()
+	srvStateChangedCh := make(chan http.ConnState, 100)
+	listener, srvClosedCh := startServer(t, server, srvStateChangedCh)
+
+	client := newClient(listener.Addr(), false)
+	client.Run()
+	<-client.connected
+	client.sendrequest <- true
+	<-client.response
+
+	server.Close()
+	if err := <-srvClosedCh; err != nil {
+		t.Error("Unexpected error during shutdown", err)
+	}
+
+	// When
+	client.sendrequest <- true
+	rr := <-client.response
+
+	// Then
+	if rr.body != nil || rr.err != nil {
+		t.Errorf("Request should be rejected, body=%v, err=%v", rr.body, rr.err)
 	}
 }
 
@@ -432,12 +425,11 @@ func TestStateTransitionActiveIdleClosed(t *testing.T) {
 		client.sendrequest <- true
 		waitForState(t, statechanged, http.StateActive, "Client failed to reach active state")
 
-		err := <-client.idle
-		if err != nil {
-			t.Fatalf("tls=%t unexpected error from client %s", withTLS, err)
+		rr := <-client.response
+		if rr.err != nil {
+			t.Fatalf("tls=%t unexpected error from client %s", withTLS, rr.err)
 		}
 
-		client.idlerelease <- true
 		waitForState(t, statechanged, http.StateIdle, "Client failed to reach idle state")
 
 		// client is now in an idle state
@@ -505,9 +497,10 @@ func TestWrapConnection(t *testing.T) {
 // new requests once shutdown has begun
 func TestShutdown(t *testing.T) {
 	server := NewServer()
+	stateChangedCh := make(chan http.ConnState)
 	wg := newTestWg()
 	server.wg = wg
-	listener, exitchan := startServer(t, server, nil)
+	listener, exitchan := startServer(t, server, stateChangedCh)
 
 	client1 := newClient(listener.Addr(), false)
 	client1.Run()
@@ -516,6 +509,9 @@ func TestShutdown(t *testing.T) {
 	if err := <-client1.connected; err != nil {
 		t.Fatal("Client failed to connect to server", err)
 	}
+	// Even though the client is connected, the server ConnState handler may
+	// not know about that yet. So wait until it is called.
+	waitForState(t, stateChangedCh, http.StateNew, "Request not received")
 
 	// start the shutdown; once it hits waitgroup.Wait()
 	// the listener should of been closed, though client1 is still connected
@@ -671,7 +667,7 @@ func TestHijackListener(t *testing.T) {
 	// (client will be in connected but idle state at that point)
 	client2.sendrequest <- true
 	// Make sure that request resulted in success
-	if err := <-client2.idle; err != nil {
+	if rr := <-client2.response; rr.err != nil {
 		t.Errorf("Client failed to write the request, error: %s", err)
 	}
 	close(client2.sendrequest)

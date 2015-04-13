@@ -1,3 +1,10 @@
+# Updates
+Forked from [mailgun/manners](https://github.com/mailgun/manners).
+
+* Automatically listens for shutdown signals if manners.ListenAndServe, manners.ListenAndServeTLS, or manners.Serve is called.
+* Automatically calls manners.Close after a grace period when a shutdown signal is caught.
+* Grace period is canceled and Close is called immediatly if a second signal is received.
+
 # Manners
 
 A *polite* webserver for Go.
@@ -29,4 +36,4 @@ Manners 0.3.0 and above uses standard library functionality introduced in Go 1.3
 
 ### Installation
 
-`go get github.com/braintree/manners`
+`go get github.com/turbine/manners`
